@@ -437,7 +437,7 @@ func getTrackStreamUrl(trackId, ref string, sampleEnd int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	streamUrl := strings.Replace(obj.StreamURL, ".128k.", ".256k.", 1)
+	streamUrl := strings.Replace(obj.StreamURL, ".128k.", ".128k.", 1)
 	return streamUrl, nil
 }
 
@@ -604,7 +604,7 @@ func writeConcatFile(txtPath string, segPaths []string) error {
 	return nil
 }
 
-func concatSegments(trackPath, tempPath string, segPaths []string) error {
+func concatSegments(trackPath, trackPathMp3, tempPath string, segPaths []string) error {
 	txtPath := filepath.Join(tempPath, "tmp.txt")
 	defer cleanup(tempPath)
 	err := writeConcatFile(txtPath, segPaths)
@@ -613,15 +613,23 @@ func concatSegments(trackPath, tempPath string, segPaths []string) error {
 	}
 	var (
 		errBuffer bytes.Buffer
-		args      = []string{"-f", "concat", "-safe", "0", "-i", txtPath, "-c:a", "copy", trackPath}
 	)
-	cmd := exec.Command("ffmpeg", args...)
+	cmd := exec.Command("/usr/local/bin/ffmpeg", "-f", "concat", "-safe", "0", "-i", txtPath, "-acodec:a", "libmp3lame", "-b:a", "320k", trackPathMp3)
 	cmd.Stderr = &errBuffer
 	err = cmd.Run()
 	if err != nil {
 		errString := fmt.Sprintf("%s\n%s", err, errBuffer.String())
 		return errors.New(errString)
 	}
+
+	// cmd = exec.Command("/usr/local/bin/ffmpeg", "-i", trackPath, "-acodec:a", "libmp3lame", "-b:a", "320k", trackPathMp3)
+	// cmd.Stderr = &errBuffer
+	// err = cmd.Run()
+	// if err != nil {
+	// 	errString := fmt.Sprintf("%s\n%s", err, errBuffer.String())
+	// 	return errors.New(errString)
+	// }
+
 	return nil
 }
 
@@ -706,8 +714,8 @@ func main() {
 	if err != nil {
 		handleErr("Failed to get subscription info.", err, true)
 	}
-	if !strings.Contains(plan, "LINK") {
-		panic("LINK or LINK Pro subscription required.")
+	if !strings.Contains(plan, "Beatport Basic") {
+		panic("Beatport Basic or Beatport Advanced subscription required.")
 	}
 	fmt.Println("Signed in successfully - " + plan + "\n")
 	albumTotal := len(cfg.Urls)
@@ -759,7 +767,8 @@ func main() {
 			trackFname := parseTemplate(cfg.TrackTemplate, trackTemplate, parsedMeta)
 			sanTrackFname := sanitize(trackFname)
 			trackPath := filepath.Join(albumPath, sanTrackFname+".m4a")
-			exists, err := fileExists(trackPath)
+			trackPathMp3 := filepath.Join(albumPath, sanTrackFname+".mp3")
+			exists, err := fileExists(trackPathMp3)
 			if err != nil {
 				handleErr("Failed to check if track already exists locally.", err, false)
 				continue
@@ -773,7 +782,7 @@ func main() {
 				continue
 			}
 			fmt.Printf(
-				"Downloading track %d of %d: %s - AAC 256\n", trackNum, trackTotal, titleWithMixName,
+				"Downloading track %d of %d: %s - AAC 128\n", trackNum, trackTotal, titleWithMixName,
 			)
 			streamUrl, err := getTrackStreamUrl(trackId, _url, trackMeta.SampleEndMs)
 			if err != nil {
@@ -790,15 +799,15 @@ func main() {
 				handleErr("Failed to download segments.", err, false)
 				continue
 			}
-			err = concatSegments(trackPath, tempPath, segPaths)
+			err = concatSegments(trackPath, trackPathMp3, tempPath, segPaths)
 			if err != nil {
 				handleErr("Failed to concat segments.", err, false)
 				continue
 			}
-			err = writeTags(trackPath, coverPath, parsedMeta)
-			if err != nil {
-				handleErr("Failed to write tags.", err, false)
-			}
+			// err = writeTags(trackPathMp3, coverPath, parsedMeta)
+			// if err != nil {
+			// 	handleErr("Failed to write tags.", err, false)
+			// }
 		}
 		if coverPath != "" && !cfg.KeepCover {
 			err := os.Remove(coverPath)
