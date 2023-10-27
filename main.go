@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -35,14 +35,15 @@ const (
 	userAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit" +
 		"/537.36 (KHTML, like Gecko) Chrome/99.0.4844.82 Safari/537.36"
 	baseUrl       = "https://www.beatport.com/"
-	apiBase       = baseUrl + "api/v4/"
+	apiBase       = "https://api.beatport.com/v4/"
 	trackTemplate = "{{.trackPad}}. {{.title}}"
 	albumTemplate = "{{.albumArtist}} - {{.album}}"
 )
 
 var (
-	jar, _ = cookiejar.New(nil)
-	client = &http.Client{Transport: &Transport{}, Jar: jar}
+	jar, _            = cookiejar.New(nil)
+	client            = &http.Client{Transport: &Transport{}, Jar: jar}
+	accessTokenBearer = ""
 )
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -146,7 +147,7 @@ func processUrls(urls []string) ([]string, error) {
 }
 
 func readConfig() (*Config, error) {
-	data, err := ioutil.ReadFile("config.json")
+	data, err := os.ReadFile("config.json")
 	if err != nil {
 		return nil, err
 	}
@@ -213,31 +214,30 @@ func checkUrl(url string) string {
 }
 
 func getCsrfToken() (string, error) {
-	_url := baseUrl + "account/login"
-	req, err := http.NewRequest(http.MethodGet, _url, nil)
+	_url := baseUrl + "api/auth/csrf"
+
+	resp, err := client.Get(_url)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Add("Referer", _url)
-	do, err := client.Do(req)
-	if err != nil {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.New(resp.Status)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var csrfResp struct {
+		CsrfToken string `json:"csrfToken"`
+	}
+	if err := json.Unmarshal(body, &csrfResp); err != nil {
 		return "", err
 	}
-	do.Body.Close()
-	if do.StatusCode != http.StatusOK {
-		return "", errors.New(do.Status)
-	}
-	var csrf string
-	for _, c := range do.Cookies() {
-		if c.Name == "_csrf_token" {
-			csrf = c.Value
-			break
-		}
-	}
-	if csrf == "" {
+	if csrfResp.CsrfToken == "" {
 		return "", errors.New("Csrf token wasn't returned by server.")
 	}
-	return csrf, nil
+
+	return csrfResp.CsrfToken, nil
 }
 
 func auth(email, pwd string) error {
@@ -245,62 +245,72 @@ func auth(email, pwd string) error {
 	if err != nil {
 		return errors.New("Failed to get CSRF token.\n" + err.Error())
 	}
-	_url := baseUrl + "account/login"
+	_url := baseUrl + "api/auth/callback/beatport"
 	data := url.Values{}
-	data.Set("_csrf_token", csrfToken)
-	data.Set("next", "")
 	data.Set("username", email)
 	data.Set("password", pwd)
+	data.Set("redirect", "false")
+	data.Set("csrfToken", csrfToken)
+	data.Set("callbackUrl", "https://www.beatport.com/account/login")
+	data.Set("json", "true")
+
 	req, err := http.NewRequest(http.MethodPost, _url, strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Add("Referer", _url)
-	do, err := client.Do(req)
+	req.Header.Add("Referer", "https://www.beatport.com/account/login")
+	do, err := client.PostForm(_url, data)
 	if err != nil {
 		return err
 	}
-	do.Body.Close()
+	defer do.Body.Close()
 	if do.StatusCode != http.StatusOK {
 		return errors.New(do.Status)
 	}
-	if do.Request.URL.String() == _url {
-		return errors.New("Redirected to login page. Bad credentials?")
+
+	body, _ := io.ReadAll(do.Body)
+	var authResp struct {
+		URL string `json:"url"`
 	}
+	if err := json.Unmarshal(body, &authResp); err != nil {
+		log.Fatal(err)
+	}
+
+	if strings.Contains(authResp.URL, "error") {
+		return errors.New("auth error. Bad credentials?")
+	}
+
 	return nil
 }
 
-func getPlan() (string, error) {
-	req, err := http.NewRequest(http.MethodGet, apiBase+"my/subscriptions", nil)
+func getSession() (SessionResponse, error) {
+	req, err := http.NewRequest(http.MethodGet, baseUrl+"api/auth/session", nil)
 	if err != nil {
-		return "", err
+		return SessionResponse{}, err
 	}
-	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Referer", baseUrl+"subscriptions")
 	do, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return SessionResponse{}, err
 	}
 	defer do.Body.Close()
 	if do.StatusCode != http.StatusOK {
-		return "", errors.New(do.Status)
+		return SessionResponse{}, errors.New(do.Status)
 	}
-	var obj UserSub
-	err = json.NewDecoder(do.Body).Decode(&obj)
-	if err != nil {
-		return "", err
+	body, _ := io.ReadAll(do.Body)
+	var obj SessionResponse
+	if json.Unmarshal(body, &obj); err != nil {
+		return SessionResponse{}, err
 	}
-	return obj.Subscription.Bundle.Name, nil
+	return obj, nil
 }
 
-func getAlbumMeta(albumId, ref string) (*AlbumMeta, error) {
+func getAlbumMeta(albumId string) (*AlbumMeta, error) {
 	req, err := http.NewRequest(http.MethodGet, apiBase+"catalog/releases/"+albumId, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Referer", ref)
+	req.Header.Add("Authorization", "Bearer "+accessTokenBearer)
 	do, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -380,13 +390,13 @@ func getTrackId(trackUrl string) (string, error) {
 	return path.Base(u.Path), nil
 }
 
-func getTrackMeta(trackId, ref string) (*TrackMeta, error) {
+func getTrackMeta(trackId string) (*TrackMeta, error) {
 	req, err := http.NewRequest(http.MethodGet, apiBase+"catalog/tracks/"+trackId, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Referer", ref)
+	req.Header.Add("Authorization", "Bearer "+accessTokenBearer)
 	do, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -413,7 +423,7 @@ func fileExists(path string) (bool, error) {
 	return false, err
 }
 
-func getTrackStreamUrl(trackId, ref string, sampleEnd int) (string, error) {
+func getTrackStreamUrl(trackId string, sampleEnd int) (string, error) {
 	req, err := http.NewRequest(http.MethodGet, apiBase+"catalog/tracks/"+trackId+"/stream", nil)
 	if err != nil {
 		return "", err
@@ -422,7 +432,7 @@ func getTrackStreamUrl(trackId, ref string, sampleEnd int) (string, error) {
 	query.Set("start", "0")
 	query.Set("end", strconv.Itoa(sampleEnd))
 	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Referer", ref)
+	req.Header.Add("Authorization", "Bearer "+accessTokenBearer)
 	req.URL.RawQuery = query.Encode()
 	do, err := client.Do(req)
 	if err != nil {
@@ -458,7 +468,7 @@ func getKey(keyUrl string) ([]byte, error) {
 	if req.StatusCode != http.StatusOK {
 		return nil, errors.New(req.Status)
 	}
-	return ioutil.ReadAll(req.Body)
+	return io.ReadAll(req.Body)
 }
 
 func parseKeyIv(segments *Segments, keyUrl, iv string) error {
@@ -540,7 +550,7 @@ func downloadSegments(tempPath string, segments *Segments) ([]string, error) {
 			return nil, errors.New(req.Status)
 		}
 		fmt.Printf("\rSegment %d of %d.", segNum, segTotal)
-		segBytes, err := ioutil.ReadAll(req.Body)
+		segBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			req.Body.Close()
 			return nil, err
@@ -582,7 +592,7 @@ func parseTemplate(templateText, defTemplate string, tags map[string]string) str
 }
 
 func cleanup(tempPath string) {
-	files, _ := ioutil.ReadDir(tempPath)
+	files, _ := os.ReadDir(tempPath)
 	for _, f := range files {
 		os.Remove(filepath.Join(tempPath, f.Name()))
 	}
@@ -710,14 +720,15 @@ func main() {
 	if err != nil {
 		handleErr("Failed to auth.", err, true)
 	}
-	plan, err := getPlan()
+	session, err := getSession()
+	accessTokenBearer = session.Token.AccessToken
 	if err != nil {
-		handleErr("Failed to get subscription info.", err, true)
+		handleErr("Failed to get session info.", err, true)
 	}
-	if !strings.Contains(plan, "Beatport Basic") {
-		panic("Beatport Basic or Beatport Advanced subscription required.")
+	if session.Introspect.Subscription != "bp_link" && session.Introspect.Subscription != "bp_link_pro" {
+		panic("Beatport Advanced or Professional subscription required.")
 	}
-	fmt.Println("Signed in successfully - " + plan + "\n")
+	fmt.Println("Signed in successfully - " + session.Introspect.Subscription + "\n")
 	albumTotal := len(cfg.Urls)
 	for albumNum, _url := range cfg.Urls {
 		fmt.Printf("Album %d of %d:\n", albumNum+1, albumTotal)
@@ -726,7 +737,8 @@ func main() {
 			fmt.Println("Invalid URL:", _url)
 			continue
 		}
-		albumMeta, err := getAlbumMeta(albumId, _url)
+
+		albumMeta, err := getAlbumMeta(albumId)
 		if err != nil {
 			handleErr("Failed to get album metadata.", err, false)
 			continue
@@ -758,7 +770,7 @@ func main() {
 				handleErr("Failed to get track ID.", err, false)
 				continue
 			}
-			trackMeta, err := getTrackMeta(trackId, _url)
+			trackMeta, err := getTrackMeta(trackId)
 			if err != nil {
 				handleErr("Failed to get track metadata.", err, false)
 				continue
@@ -784,7 +796,7 @@ func main() {
 			fmt.Printf(
 				"Downloading track %d of %d: %s - AAC 128\n", trackNum, trackTotal, titleWithMixName,
 			)
-			streamUrl, err := getTrackStreamUrl(trackId, _url, trackMeta.SampleEndMs)
+			streamUrl, err := getTrackStreamUrl(trackId, trackMeta.SampleEndMs)
 			if err != nil {
 				handleErr("Failed to get track stream URL.", err, false)
 				continue
