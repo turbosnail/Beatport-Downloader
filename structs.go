@@ -22,45 +22,29 @@ type Args struct {
 	TrackTemplate string   `arg:"-t" help:"Track filename naming template. Vars: album, albumArtist, artist, bpm, genre, isrc, title, track, trackPad, trackTotal, year."`
 }
 
-type UserSub struct {
-	Subscription struct {
-		UpdatedPersonID       int         `json:"updated_person_id"`
-		CreatedPersonID       int         `json:"created_person_id"`
-		ID                    int         `json:"id"`
-		Person                int         `json:"person"`
-		Notes                 interface{} `json:"notes"`
-		FreeTrialStartDate    string      `json:"free_trial_start_date"`
-		FreeTrialEndDate      string      `json:"free_trial_end_date"`
-		RecurlySubscriptionID string      `json:"recurly_subscription_id"`
-		Bundle                struct {
-			UpdatedPersonID int    `json:"updated_person_id"`
-			CreatedPersonID int    `json:"created_person_id"`
-			ID              int    `json:"id"`
-			Name            string `json:"name"`
-			Description     string `json:"description"`
-			Enabled         bool   `json:"enabled"`
-			PlanCode        string `json:"plan_code"`
-		} `json:"bundle"`
-		StartDate                 string `json:"start_date"`
-		EndDate                   string `json:"end_date"`
-		RecurlySubscriptionStatus string `json:"recurly_subscription_status"`
-		RecurlyInvoiceStatus      string `json:"recurly_invoice_status"`
-	} `json:"subscription"`
-	BillingInfo struct {
-		Type      string `json:"type"`
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		Address1  string `json:"address1"`
-		Address2  string `json:"address2"`
-		City      string `json:"city"`
-		State     string `json:"state"`
-		Zip       string `json:"zip"`
-		Country   string `json:"country"`
-		CardType  string `json:"card_type"`
-		LastFour  string `json:"last_four"`
-	} `json:"billing_info"`
-	Active bool     `json:"active"`
-	Status []string `json:"status"`
+type SessionResponse struct {
+	User       interface{} `json:"user"`
+	Expires    string      `json:"expires"` // "2023-11-26T07:01:14.365Z"
+	Introspect struct {
+		ApplicationID uint64   `json:"application_id"`
+		UserID        uint64   `json:"user_id"`
+		Username      string   `json:"username"`
+		FirstName     string   `json:"first_name"`
+		LastName      string   `json:"last_name"`
+		Scope         string   `json:"scope"` // "app:prostore user:dj"
+		Feature       []string `json:"feature"`
+		Subscription  string   `json:"subscription"` // "bp_link"
+		PersonID      uint64   `json:"person_id"`
+	} `json:"introspect"`
+	Token struct {
+		AccessToken        string `json:"accessToken"`
+		RefreshToken       string `json:"refreshToken"`
+		ExpiresIn          uint64 `json:"expiresIn"` // 36000
+		TokenType          string `json:"tokenType"` // "Bearer"
+		Scope              string `json:"scope"`     // "app:prostore user:dj",
+		Anon               bool   `json:"anon"`
+		AccessTokenExpires uint64 `json:"accessTokenExpires"` // 1698426074567
+	} `json:"token"`
 }
 
 type Artist struct {
